@@ -1,0 +1,24 @@
+{
+  "name": "grok-code",
+  "version": "1.0.0",
+  "description": "Minimal agentic coding CLI powered by xAI's Grok",
+  "main": "dist/index.js",
+  "bin": {
+    "grok-code": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs --out-dir dist --clean",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "glob": "^11.0.0",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT"
+}
