@@ -1,6 +1,6 @@
 {
   "name": "grok-code",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Minimal agentic coding CLI powered by xAI's Grok",
   "main": "dist/index.js",
   "bin": {

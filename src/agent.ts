@@ -1,10 +1,11 @@
 import { createClient } from './api/client.js';
 import { tools, executeTool, stats } from './tools/index.js';
-import { CYAN, YELLOW, DIM, RESET, log } from './output/format.js';
+import { CYAN, YELLOW, GREEN, RED, DIM, RESET, log } from './output/format.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { globSync } from 'glob';
 import { readFileSync, readdirSync } from 'fs';
 import { resolve } from 'path';
+import { execSync } from 'child_process';
 import { estimateMessageTokens, compactMessages, warnIfOverBudget } from './context/manager.js';
 import { generateDiffs } from './output/diff.js';
 
@@ -18,66 +19,101 @@ export interface AgentConfig {
   contextBudget: number;
   files?: string[];
   noDiff: boolean;
+  verify?: string;
+  commandTimeout: number;
+  projectSystemPrompt?: string;
+  projectRules?: string[];
+  json: boolean;
 }
 
-const SYSTEM_PROMPT =
-  "You are an expert software engineer. You have access to tools for reading, writing, and editing files, running shell commands, and searching codebases. Complete the user's request by using these tools. Be thorough and precise.";
+export interface AgentResult {
+  success: boolean;
+  rounds: number;
+  filesModified: string[];
+  commandsRun: number;
+  verifyPassed: boolean | null; // null = no verify configured
+  verifyAttempts: number;
+}
 
-export async function runAgent(config: AgentConfig) {
-  const client = createClient(config.apiKey);
+const BASE_SYSTEM_PROMPT = `You are a principal-level software engineer — not just senior, principal. You write code that ships to production without review passes.
 
-  let userContent = config.prompt;
+## Standards
+- **Verify before assuming.** Read the actual code, schemas, configs, and directory structure. Confirm names, paths, and types exist before referencing them. Never guess.
+- **Correctness over speed.** Handle edge cases, error states, and resource cleanup. Every resource you open gets closed. Every listener gets removed. Every async operation gets cancellation.
+- **Security by default.** Scope data access to the authenticated user. Validate and sanitize inputs. Never trust client-provided data for authorization decisions.
+- **Match existing patterns.** Read neighboring files before writing new ones. Follow the project's naming, error handling, file structure, and style conventions exactly.
+- **Minimal surface area.** Don't compute server-side what's trivial client-side. Don't add abstractions without justification. Keep changes focused.
+- **Test your assumptions.** If a route, import, type, or API endpoint is referenced, verify it exists by reading the file or listing the directory.
 
-  // File pre-loading
-  if (config.files && config.files.length > 0) {
-    const preloaded: string[] = [];
-    for (const pattern of config.files) {
-      const paths = globSync(pattern, { cwd: config.workDir });
-      for (const path of paths) {
-        const fullPath = resolve(config.workDir, path);
-        const content = readFileSync(fullPath, 'utf-8');
-        preloaded.push(`--- ${path} ---\n${content}`);
-      }
-    }
-    if (preloaded.length > 0) {
-      userContent = `Pre-loaded files:\n\n${preloaded.join('\n\n')}\n\n${userContent}`;
-    }
+## Process
+1. Read existing code first — understand patterns, data model, and architecture before writing.
+2. Verify that all imports, routes, links, and references point to things that actually exist.
+3. After changes, the build will be verified automatically if configured. Write correct code the first time.
+4. If something is ambiguous, investigate. Read another file. Search the codebase. Don't assume.
+
+## Rules Enforcement
+- Project rules marked with MUST or NEVER are non-negotiable. Follow them exactly.
+- When existing code uses a specific library or pattern (e.g., an ORM query builder), use that same pattern. Do not switch to raw SQL, raw fetch, or alternative approaches unless the rule explicitly says to.
+
+## Pre-Completion Checklist
+Before you give your final response, verify:
+- [ ] All new files use the same patterns as existing neighboring files
+- [ ] All hrefs/links point to routes that actually exist (list the directory to check)
+- [ ] All event listeners and subscriptions have cleanup
+- [ ] All fetch calls have AbortController where appropriate
+- [ ] UI state is cleaned up on navigation (close modals, clear inputs)
+- [ ] Types are explicit — no implicit 'any', no unsafe casts
+
+You have tools for reading files, writing files, editing files, running commands, listing directories, and searching codebases. Use them.`;
+
+function buildSystemPrompt(config: AgentConfig): string {
+  let prompt = BASE_SYSTEM_PROMPT;
+
+  if (config.projectSystemPrompt) {
+    prompt += `\n\n## Project Context\n${config.projectSystemPrompt}`;
   }
 
-  // Auto-include file listing if <20 files
-  const files = readdirSync(config.workDir);
-  if (files.length < 20) {
-    const listing = `Files in directory:\n${files.join('\n')}\n\n`;
-    userContent = listing + userContent;
+  if (config.projectRules && config.projectRules.length > 0) {
+    prompt += `\n\n## Project Rules (follow strictly — MUST/NEVER are non-negotiable)`;
+    config.projectRules.forEach((rule, i) => {
+      prompt += `\n${i + 1}. ${rule}`;
+    });
   }
 
-  let messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: userContent },
-  ];
+  if (config.verify) {
+    prompt += `\n\n## Verification\nAfter completing your changes, a verification command (\`${config.verify}\`) will be run automatically. If it fails, you'll be given the output to fix. Write correct code the first time.`;
+  }
 
-  log(`${CYAN}grok-code${RESET} — model: ${config.model} | dir: ${config.workDir}\n\n`);
+  return prompt;
+}
 
-  const spinnerFrames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-  let spinnerInterval: NodeJS.Timeout | null = null;
+const spinnerFrames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
 
-  const startSpinner = () => {
-    let i = 0;
-    spinnerInterval = setInterval(() => {
-      process.stderr.write(`\r${spinnerFrames[i]} `);
-      i = (i + 1) % spinnerFrames.length;
-    }, 100);
-  };
+function startSpinner(): NodeJS.Timeout {
+  let i = 0;
+  return setInterval(() => {
+    process.stderr.write(`\r${spinnerFrames[i]} `);
+    i = (i + 1) % spinnerFrames.length;
+  }, 100);
+}
 
-  const stopSpinner = () => {
-    if (spinnerInterval) {
-      clearInterval(spinnerInterval);
-      spinnerInterval = null;
-      process.stderr.write('\r \r'); // clear
-    }
-  };
+function stopSpinner(interval: NodeJS.Timeout): void {
+  clearInterval(interval);
+  process.stderr.write('\r \r');
+}
 
+/**
+ * Run one pass of the agent loop. Returns when the model produces a final
+ * text response (no tool calls) or hits maxRounds.
+ */
+async function runAgentPass(
+  client: ReturnType<typeof createClient>,
+  messages: ChatCompletionMessageParam[],
+  config: AgentConfig,
+  roundOffset: number,
+): Promise<{ rounds: number; messages: ChatCompletionMessageParam[] }> {
   let rounds = 0;
+
   for (let round = 0; round < config.maxRounds; round++) {
     rounds++;
 
@@ -89,7 +125,7 @@ export async function runAgent(config: AgentConfig) {
       messages = compactedMessages;
     }
 
-    startSpinner();
+    const spinner = startSpinner();
 
     const stream = await client.chat.completions.create({
       model: config.model,
@@ -98,7 +134,7 @@ export async function runAgent(config: AgentConfig) {
       stream: true,
     });
 
-    stopSpinner();
+    stopSpinner(spinner);
 
     let accumulatedContent = '';
     const toolCalls: { [index: number]: { id?: string; function: { name: string; arguments: string } } } = {};
@@ -150,7 +186,7 @@ export async function runAgent(config: AgentConfig) {
           log(`${YELLOW}⚡ ${name}${RESET}\n`);
         }
 
-        const result = executeTool(name, argsStr, config.workDir, stats);
+        const result = executeTool(name, argsStr, config.workDir, stats, config.commandTimeout);
 
         if (config.verbose) {
           const preview = result.length > 500 ? result.slice(0, 500) + "..." : result;
@@ -159,34 +195,154 @@ export async function runAgent(config: AgentConfig) {
 
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
-      // Log token count after round
       const tokensAfter = estimateMessageTokens(messages);
-      log(`${DIM}Tokens after round ${rounds}: ${tokensAfter}${RESET}\n`);
+      log(`${DIM}Tokens after round ${roundOffset + rounds}: ${tokensAfter}${RESET}\n`);
       continue;
     }
 
-    // If no tool calls, it's final text, add newline if needed
+    // Final text response
     if (accumulatedContent && !accumulatedContent.endsWith("\n")) {
       process.stdout.write("\n");
     }
-    // Log token count
     const tokensAfter = estimateMessageTokens(messages);
-    log(`${DIM}Tokens after round ${rounds}: ${tokensAfter}${RESET}\n`);
+    log(`${DIM}Tokens after round ${roundOffset + rounds}: ${tokensAfter}${RESET}\n`);
     break;
   }
 
-  // Summary
-  log(
-    `\n${CYAN}── Summary ──${RESET}\n` +
-      `Rounds: ${rounds} | Files modified: ${stats.filesModified.size} | Commands run: ${stats.commandsRun}\n`
-  );
-  if (stats.filesModified.size > 0) {
-    log(`Files: ${[...stats.filesModified].join(", ")}\n`);
+  return { rounds, messages };
+}
+
+function runVerifyCommand(command: string, workDir: string, timeout: number): { success: boolean; output: string } {
+  try {
+    const output = execSync(command, {
+      cwd: workDir,
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return { success: true, output: output || '(no output)' };
+  } catch (e: any) {
+    const stdout = e.stdout || '';
+    const stderr = e.stderr || '';
+    return { success: false, output: `Exit code ${e.status ?? 'unknown'}\n${stdout}\n${stderr}`.trim() };
   }
-  if (!config.noDiff) {
-    const diffs = generateDiffs(config.workDir);
-    if (diffs) {
-      log(`\n${CYAN}── Diffs ──${RESET}\n${diffs}\n`);
+}
+
+export async function runAgent(config: AgentConfig): Promise<AgentResult> {
+  const client = createClient(config.apiKey);
+
+  let userContent = config.prompt;
+
+  // File pre-loading
+  if (config.files && config.files.length > 0) {
+    const preloaded: string[] = [];
+    for (const pattern of config.files) {
+      const paths = globSync(pattern, { cwd: config.workDir });
+      for (const path of paths) {
+        const fullPath = resolve(config.workDir, path);
+        const content = readFileSync(fullPath, 'utf-8');
+        preloaded.push(`--- ${path} ---\n${content}`);
+      }
+    }
+    if (preloaded.length > 0) {
+      userContent = `Pre-loaded files:\n\n${preloaded.join('\n\n')}\n\n${userContent}`;
     }
   }
+
+  // Auto-include file listing if <20 files
+  const files = readdirSync(config.workDir);
+  if (files.length < 20) {
+    const listing = `Files in directory:\n${files.join('\n')}\n\n`;
+    userContent = listing + userContent;
+  }
+
+  const systemPrompt = buildSystemPrompt(config);
+
+  let messages: ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userContent },
+  ];
+
+  const hasProjectConfig = !!(config.projectSystemPrompt || (config.projectRules && config.projectRules.length > 0));
+  log(`${CYAN}grok-code${RESET} v2.0 — model: ${config.model} | dir: ${config.workDir}${hasProjectConfig ? ' | .grokcode loaded' : ''}\n`);
+  if (config.verify) {
+    log(`${DIM}Verify: ${config.verify}${RESET}\n`);
+  }
+  log('\n');
+
+  let totalRounds = 0;
+  let verifyPassed: boolean | null = null;
+  let verifyAttempts = 0;
+
+  // Main agent pass
+  const result = await runAgentPass(client, messages, config, totalRounds);
+  totalRounds += result.rounds;
+  messages = result.messages;
+
+  // Verify loop
+  if (config.verify) {
+    const maxAttempts = 3;
+    verifyPassed = false;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      verifyAttempts = attempt;
+      log(`\n${CYAN}── Verify (attempt ${attempt}/${maxAttempts}) ──${RESET}\n`);
+      log(`${DIM}$ ${config.verify}${RESET}\n`);
+
+      const verifyResult = runVerifyCommand(config.verify, config.workDir, config.commandTimeout * 4);
+
+      if (verifyResult.success) {
+        log(`${GREEN}✓ Verification passed${RESET}\n`);
+        verifyPassed = true;
+        break;
+      }
+
+      log(`${RED}✗ Verification failed${RESET}\n`);
+
+      if (attempt === maxAttempts) {
+        log(`${RED}Giving up after ${maxAttempts} verify attempts.${RESET}\n`);
+        break;
+      }
+
+      // Feed errors back to the agent
+      const errorContent = `The verification command \`${config.verify}\` failed. Fix the errors and try again:\n\n\`\`\`\n${verifyResult.output.slice(0, 8000)}\n\`\`\``;
+      messages.push({ role: "user", content: errorContent });
+
+      const fixResult = await runAgentPass(client, messages, config, totalRounds);
+      totalRounds += fixResult.rounds;
+      messages = fixResult.messages;
+    }
+  }
+
+  const agentResult: AgentResult = {
+    success: verifyPassed === null ? true : verifyPassed,
+    rounds: totalRounds,
+    filesModified: [...stats.filesModified],
+    commandsRun: stats.commandsRun,
+    verifyPassed,
+    verifyAttempts,
+  };
+
+  // Output
+  if (config.json) {
+    process.stdout.write(JSON.stringify(agentResult, null, 2) + '\n');
+  } else {
+    log(
+      `\n${CYAN}── Summary ──${RESET}\n` +
+        `Rounds: ${totalRounds} | Files modified: ${stats.filesModified.size} | Commands run: ${stats.commandsRun}` +
+        (verifyPassed !== null ? ` | Verify: ${verifyPassed ? `${GREEN}passed${RESET}` : `${RED}failed${RESET}`} (${verifyAttempts} attempt${verifyAttempts !== 1 ? 's' : ''})` : '') +
+        '\n'
+    );
+    if (stats.filesModified.size > 0) {
+      log(`Files: ${[...stats.filesModified].join(", ")}\n`);
+    }
+    if (!config.noDiff) {
+      const diffs = generateDiffs(config.workDir);
+      if (diffs) {
+        log(`\n${CYAN}── Diffs ──${RESET}\n${diffs}\n`);
+      }
+    }
+  }
+
+  return agentResult;
 }

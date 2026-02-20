@@ -6,10 +6,23 @@ import { resolvePath } from './resolve.js';
 import { loadIgnorePatterns, shouldIgnore } from '../config/ignore.js';
 import { snapshotFile } from '../output/diff.js';
 
-export function toolReadFile(workDir: string, args: { path: string }): string {
+export function toolReadFile(workDir: string, args: { path: string; offset?: number; limit?: number }): string {
   snapshotFile(workDir, args.path);
   try {
-    return readFileSync(resolvePath(workDir, args.path), "utf-8");
+    const content = readFileSync(resolvePath(workDir, args.path), "utf-8");
+    if (args.offset || args.limit) {
+      const lines = content.split('\n');
+      const start = (args.offset || 1) - 1; // 1-indexed to 0-indexed
+      const count = args.limit || lines.length;
+      const slice = lines.slice(start, start + count);
+      const totalLines = lines.length;
+      let result = slice.join('\n');
+      if (start + count < totalLines) {
+        result += `\n\n[... ${totalLines - start - count} more lines. Use offset=${start + count + 1} to continue.]`;
+      }
+      return result;
+    }
+    return content;
   } catch (e: any) {
     return `Error: ${e.message}`;
   }
@@ -34,7 +47,7 @@ export function toolEditFile(workDir: string, args: { path: string; old_text: st
     const fp = resolvePath(workDir, args.path);
     const content = readFileSync(fp, "utf-8");
     if (!content.includes(args.old_text)) return "Error: old_text not found in file";
-    writeFileSync(fp, content.replace(args.old_text, args.new_text));
+    writeFileSync(fp, content.replaceAll(args.old_text, args.new_text));
     stats.filesModified.add(args.path);
     return `Edited ${args.path}`;
   } catch (e: any) {
@@ -68,10 +81,14 @@ export const fileToolDefs: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read the contents of a file",
+      description: "Read the contents of a file. For large files, use offset and limit to read in chunks.",
       parameters: {
         type: "object",
-        properties: { path: { type: "string", description: "File path relative to working directory" } },
+        properties: {
+          path: { type: "string", description: "File path relative to working directory" },
+          offset: { type: "number", description: "Line number to start reading from (1-indexed)" },
+          limit: { type: "number", description: "Maximum number of lines to read" },
+        },
         required: ["path"],
       },
     },
@@ -95,7 +112,7 @@ export const fileToolDefs: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "edit_file",
-      description: "Find and replace text in a file",
+      description: "Find and replace ALL occurrences of text in a file",
       parameters: {
         type: "object",
         properties: {

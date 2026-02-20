@@ -37,7 +37,10 @@ export function compactMessages(messages: ChatCompletionMessageParam[], budgetTo
   const toCompact = toolMessages.slice(0, Math.max(0, toolMessages.length - keepCount));
 
   for (const { index, content, tokens } of toCompact) {
-    modified[index].content = `[compacted - was ${tokens} tokens]`;
+    // Keep first 200 chars as a summary so the model has some context
+    const preview = content.slice(0, 200);
+    const suffix = content.length > 200 ? '...' : '';
+    modified[index].content = `[compacted from ${tokens} tokens] ${preview}${suffix}`;
   }
 
   return modified;

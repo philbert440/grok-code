@@ -11,14 +11,14 @@ export const tools: ChatCompletionTool[] = [
 
 export const stats = { filesModified: new Set<string>(), commandsRun: 0 };
 
-export function executeTool(name: string, argsJson: string, workDir: string, stats: { filesModified: Set<string>, commandsRun: number }): string {
+export function executeTool(name: string, argsJson: string, workDir: string, stats: { filesModified: Set<string>, commandsRun: number }, commandTimeout: number = 30000): string {
   const args = JSON.parse(argsJson);
   switch (name) {
     case "read_file": return toolReadFile(workDir, args);
     case "write_file": return toolWriteFile(workDir, args, stats);
     case "edit_file": return toolEditFile(workDir, args, stats);
     case "run_command": {
-      const result = toolRunCommand(workDir, args);
+      const result = toolRunCommand(workDir, args, commandTimeout);
       stats.commandsRun = getCommandsRun();
       return result;
     }

@@ -4,13 +4,13 @@ import { resolvePath } from './resolve.js';
 
 let commandsRun = 0;
 
-export function toolRunCommand(workDir: string, args: { command: string; cwd?: string }): string {
+export function toolRunCommand(workDir: string, args: { command: string; cwd?: string }, timeout: number = 30000): string {
   try {
     const cwd = args.cwd ? resolvePath(workDir, args.cwd) : workDir;
     commandsRun++;
     const out = execSync(args.command, {
       cwd,
-      timeout: 30000,
+      timeout,
       maxBuffer: 10 * 1024 * 1024,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -28,7 +28,7 @@ export const commandToolDefs: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "run_command",
-      description: "Execute a shell command (30s timeout)",
+      description: "Execute a shell command",
       parameters: {
         type: "object",
         properties: {
