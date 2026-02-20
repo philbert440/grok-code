@@ -1,0 +1,125 @@
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "fs";
+import { resolve, dirname } from "path";
+import { globSync } from "glob";
+import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import { resolvePath } from './resolve.js';
+import { loadIgnorePatterns, shouldIgnore } from '../config/ignore.js';
+import { snapshotFile } from '../output/diff.js';
+
+export function toolReadFile(workDir: string, args: { path: string }): string {
+  snapshotFile(workDir, args.path);
+  try {
+    return readFileSync(resolvePath(workDir, args.path), "utf-8");
+  } catch (e: any) {
+    return `Error: ${e.message}`;
+  }
+}
+
+export function toolWriteFile(workDir: string, args: { path: string; content: string }, stats: { filesModified: Set<string> }): string {
+  snapshotFile(workDir, args.path);
+  try {
+    const fp = resolvePath(workDir, args.path);
+    mkdirSync(dirname(fp), { recursive: true });
+    writeFileSync(fp, args.content);
+    stats.filesModified.add(args.path);
+    return `Wrote ${args.path}`;
+  } catch (e: any) {
+    return `Error: ${e.message}`;
+  }
+}
+
+export function toolEditFile(workDir: string, args: { path: string; old_text: string; new_text: string }, stats: { filesModified: Set<string> }): string {
+  snapshotFile(workDir, args.path);
+  try {
+    const fp = resolvePath(workDir, args.path);
+    const content = readFileSync(fp, "utf-8");
+    if (!content.includes(args.old_text)) return "Error: old_text not found in file";
+    writeFileSync(fp, content.replace(args.old_text, args.new_text));
+    stats.filesModified.add(args.path);
+    return `Edited ${args.path}`;
+  } catch (e: any) {
+    return `Error: ${e.message}`;
+  }
+}
+
+export function toolListFiles(workDir: string, args: { path: string; recursive?: boolean }): string {
+  try {
+    const fp = resolvePath(workDir, args.path);
+    const patterns = loadIgnorePatterns(workDir);
+    if (args.recursive) {
+      const allFiles = globSync("**/*", { cwd: fp, nodir: true, dot: false });
+      const filtered = allFiles.filter(file => !shouldIgnore(file, patterns));
+      return filtered.join("\n") || "(empty)";
+    }
+    const allItems = readdirSync(fp)
+      .map((f) => {
+        const s = statSync(resolve(fp, f));
+        return s.isDirectory() ? f + "/" : f;
+      });
+    const filtered = allItems.filter(item => !shouldIgnore(item, patterns));
+    return filtered.join("\n") || "(empty)";
+  } catch (e: any) {
+    return `Error: ${e.message}`;
+  }
+}
+
+export const fileToolDefs: ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read the contents of a file",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "File path relative to working directory" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Write content to a file (creates parent dirs automatically)",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path" },
+          content: { type: "string", description: "File content" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit_file",
+      description: "Find and replace text in a file",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          old_text: { type: "string", description: "Exact text to find" },
+          new_text: { type: "string", description: "Replacement text" },
+        },
+        required: ["path", "old_text", "new_text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_files",
+      description: "List files in a directory",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          recursive: { type: "boolean", description: "List recursively" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+];
