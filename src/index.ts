@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import { resolve } from "path";
+import { globSync } from "glob";
 import { runAgent } from './agent.js';
 import { loadProjectConfig } from './config/project.js';
 
@@ -47,13 +48,19 @@ if (!apiKey) {
 
 const workDir = resolve(opts.directory);
 
+// Calculate dynamic budget based on files
+const fileCount = globSync('**/*', { cwd: workDir, ignore: ['node_modules/**', '.git/**'], dot: false }).length;
+const minBudget = 50000;
+const maxBudget = 300000;
+const dynamicBudget = Math.min(maxBudget, Math.max(minBudget, minBudget + fileCount * 200));
+
 // Load project config — CLI flags override
 const projectConfig = loadProjectConfig(workDir);
 
 const model = opts.model || projectConfig.model || 'grok-code-fast-1';
 const maxRounds = opts.maxRounds ? parseInt(opts.maxRounds, 10) : (projectConfig.maxRounds || 100);
 const verbose = !!opts.verbose;
-const contextBudget = opts.contextBudget ? parseInt(opts.contextBudget, 10) : (projectConfig.contextBudget || 200000);
+const contextBudget = opts.contextBudget ? parseInt(opts.contextBudget, 10) : (projectConfig.contextBudget || dynamicBudget);
 const commandTimeout = opts.cmdTimeout ? parseInt(opts.cmdTimeout, 10) : (projectConfig.commandTimeout || 30000);
 const verify = opts.verify || projectConfig.verify;
 

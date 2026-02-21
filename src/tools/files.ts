@@ -46,8 +46,10 @@ export function toolEditFile(workDir: string, args: { path: string; old_text: st
   try {
     const fp = resolvePath(workDir, args.path);
     const content = readFileSync(fp, "utf-8");
-    if (!content.includes(args.old_text)) return "Error: old_text not found in file";
-    writeFileSync(fp, content.replaceAll(args.old_text, args.new_text));
+    const oldText = args.old_text.trim();
+    const newText = args.new_text.trim();
+    if (!content.includes(oldText)) return "Error: old_text not found in file";
+    writeFileSync(fp, content.replaceAll(oldText, newText));
     stats.filesModified.add(args.path);
     return `Edited ${args.path}`;
   } catch (e: any) {

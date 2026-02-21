@@ -12,8 +12,22 @@ export interface ProjectConfig {
   rules?: string[];
 }
 
+function findProjectRoot(dir: string): string {
+  let current = resolve(dir);
+  while (true) {
+    if (existsSync(resolve(current, 'package.json'))) {
+      return current;
+    }
+    const parent = resolve(current, '..');
+    if (parent === current) break;
+    current = parent;
+  }
+  return dir; // fallback
+}
+
 export function loadProjectConfig(workDir: string): ProjectConfig {
-  const configPath = resolve(workDir, '.grokcode');
+  const projectRoot = findProjectRoot(workDir);
+  const configPath = resolve(projectRoot, '.grokcode');
   if (!existsSync(configPath)) return {};
 
   try {
