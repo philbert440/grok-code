@@ -63,6 +63,9 @@ Before you give your final response, verify:
 - [ ] All fetch calls have AbortController where appropriate
 - [ ] UI state is cleaned up on navigation (close modals, clear inputs)
 - [ ] Types are explicit — no implicit 'any', no unsafe casts
+- [ ] No duplicated logic blocks >10 lines — extract to a helper function
+- [ ] Unit conversions traced end-to-end (input unit → each transform → output unit)
+- [ ] Every API route has at least one caller; every UI action that should persist calls its API
 
 You have tools for reading files, writing files, editing files, running commands, listing directories, and searching codebases. Use them.`;
 
