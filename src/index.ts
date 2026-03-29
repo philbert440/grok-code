@@ -57,7 +57,7 @@ const dynamicBudget = Math.min(maxBudget, Math.max(minBudget, minBudget + fileCo
 // Load project config — CLI flags override
 const projectConfig = loadProjectConfig(workDir);
 
-const model = opts.model || projectConfig.model || 'grok-code-fast-1';
+const model = opts.model || projectConfig.model || 'grok-4-1-fast-reasoning';
 const maxRounds = opts.maxRounds ? parseInt(opts.maxRounds, 10) : (projectConfig.maxRounds || 100);
 const verbose = !!opts.verbose;
 const contextBudget = opts.contextBudget ? parseInt(opts.contextBudget, 10) : (projectConfig.contextBudget || dynamicBudget);
